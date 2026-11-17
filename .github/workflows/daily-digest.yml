@@ -46,6 +46,8 @@ jobs:
               && mv "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
           }
           fetch_identity_token
+          # Log the claims the federation rule is matched against (no signature, nothing secret).
+          python3 -c 'import sys,json,base64; p=sys.stdin.read().split(".")[1]; c=json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))); print("identity token claims:", {k:c.get(k) for k in ("iss","sub","aud")})' < "$ANTHROPIC_IDENTITY_TOKEN_FILE"
           # GitHub identity tokens are short-lived and the pipeline runs longer,
           # so keep the file fresh for whenever the SDK needs to re-exchange it.
           ( while sleep 180; do fetch_identity_token || echo "identity token refresh failed"; done ) &
