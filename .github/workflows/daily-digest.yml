@@ -16,6 +16,9 @@ jobs:
   digest:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # lets the job mint a GitHub identity token for Anthropic workload identity federation
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,10 +28,27 @@ jobs:
       - run: npm ci
       - name: Run pipeline
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Anthropic auth is workload identity federation: no API key. The SDK
+          # exchanges the GitHub identity token in this file for a short-lived token.
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
+          WIF_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          WIF_AUDIENCE: https://api.anthropic.com
           TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
         run: |
+          if [ -n "$WIF_WORKSPACE_ID" ]; then export ANTHROPIC_WORKSPACE_ID="$WIF_WORKSPACE_ID"; fi
+          fetch_identity_token() {
+            curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              --get --data-urlencode "audience=$WIF_AUDIENCE" "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+              | jq -er .value > "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" \
+              && mv "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
+          fetch_identity_token
+          # GitHub identity tokens are short-lived and the pipeline runs longer,
+          # so keep the file fresh for whenever the SDK needs to re-exchange it.
+          ( while sleep 180; do fetch_identity_token || echo "identity token refresh failed"; done ) &
           ARGS=""
           if [ -n "${{ inputs.date }}" ]; then ARGS="$ARGS --date ${{ inputs.date }}"; fi
           if [ -n "${{ inputs.force_from }}" ]; then ARGS="$ARGS --force-from ${{ inputs.force_from }}"; fi
