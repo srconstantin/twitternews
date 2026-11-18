@@ -1,5 +1,5 @@
 import { Tweet, ThemeConfig } from "@/lib/types";
-import { PipelineCtx, pMap, windowFor } from "@/lib/pipeline/index";
+import { PipelineCtx, Tally, pMap, windowFor } from "@/lib/pipeline/index";
 
 const MAX_PER_ACCOUNT = 40;
 const MAX_PER_QUERY = 200;
@@ -12,15 +12,18 @@ export async function fetchStage(
   const { sinceIso, untilIso } = windowFor(ctx.date);
   ctx.log(`[${theme.id}] fetch: window ${sinceIso} .. ${untilIso}`);
 
+  const tally = new Tally();
   const accountBatches = await pMap(
     theme.accounts,
     async (handle) => {
       try {
         const tweets = await ctx.fetcher.userRecentTweets(handle, sinceIso);
         ctx.log(`[${theme.id}] fetch: @${handle} -> ${tweets.length}`);
+        tally.success();
         return tweets.slice(0, MAX_PER_ACCOUNT);
       } catch (err) {
         ctx.log(`[${theme.id}] fetch: @${handle} FAILED: ${String(err)}`);
+        tally.failure(err);
         return [];
       }
     },
@@ -33,14 +36,18 @@ export async function fetchStage(
       try {
         const tweets = await ctx.fetcher.search(query, sinceIso, MAX_PER_QUERY);
         ctx.log(`[${theme.id}] fetch: "${query}" -> ${tweets.length}`);
+        tally.success();
         return tweets;
       } catch (err) {
         ctx.log(`[${theme.id}] fetch: "${query}" FAILED: ${String(err)}`);
+        tally.failure(err);
         return [];
       }
     },
     FETCH_CONCURRENCY
   );
+
+  tally.assertSomeSucceeded(theme.id, "fetch", "account and search requests");
 
   // Window-filter, dedupe by id (summing folded-retweet amplification counts).
   const since = new Date(sinceIso).getTime();

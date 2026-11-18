@@ -62,6 +62,36 @@ async function runStage<T>(
   return result;
 }
 
+// Stages tolerate individual failures (one bad query, one malformed LLM reply)
+// so a partial digest still ships. But when EVERY attempt in a stage fails the
+// cause is systemic — exhausted credits, rejected credentials, an outage — and
+// carrying on would publish an empty digest and save an empty checkpoint that
+// later runs skip over. A tally lets a stage tell those two cases apart.
+export class StageFailedError extends Error {}
+
+export class Tally {
+  private ok = 0;
+  private failed = 0;
+  private lastError: unknown;
+
+  success(): void {
+    this.ok++;
+  }
+  failure(err: unknown): void {
+    this.failed++;
+    this.lastError = err;
+  }
+  // Throws when there were attempts and none succeeded. Zero attempts (nothing
+  // to do) is not a failure.
+  assertSomeSucceeded(themeId: string, stage: Stage, what: string): void {
+    if (this.failed > 0 && this.ok === 0) {
+      throw new StageFailedError(
+        `[${themeId}] ${stage}: all ${this.failed} ${what} failed; last error: ${String(this.lastError)}`
+      );
+    }
+  }
+}
+
 export async function runThemePipeline(
   ctx: PipelineCtx,
   theme: ThemeConfig
@@ -92,9 +122,24 @@ export async function runPipeline(
     generatedAt: new Date().toISOString(),
     themes: {},
   };
+  // A theme whose stage failed outright is left out of the digest (its previous
+  // content for this date, if any, is kept) and reported at the end, so one
+  // broken theme doesn't stop the others from publishing.
+  const failures: string[] = [];
   for (const theme of themes) {
     ctx.log(`=== theme: ${theme.id} ===`);
-    digest.themes[theme.id] = await runThemePipeline(ctx, theme);
+    try {
+      digest.themes[theme.id] = await runThemePipeline(ctx, theme);
+    } catch (err) {
+      if (!(err instanceof StageFailedError)) throw err;
+      ctx.log(`PIPELINE FAILURE ${err.message}`);
+      failures.push(err.message);
+    }
+  }
+  if (failures.length === themes.length) {
+    throw new StageFailedError(
+      `digest ${ctx.date} not written, every theme failed:\n${failures.join("\n")}`
+    );
   }
 
   // Merge with any themes already present for this date (per-theme runs).
@@ -123,6 +168,11 @@ export async function runPipeline(
         .map(([id, items]) => `${id}=${items.length}`)
         .join(", ")
   );
+  if (failures.length > 0) {
+    throw new StageFailedError(
+      `digest ${ctx.date} written without ${failures.length} failed theme(s):\n${failures.join("\n")}`
+    );
+  }
   return digest;
 }
 

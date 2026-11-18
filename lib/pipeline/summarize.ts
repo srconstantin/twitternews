@@ -9,7 +9,7 @@ import {
   RankedCluster,
   ThemeConfig,
 } from "@/lib/types";
-import { PipelineCtx, pMap } from "@/lib/pipeline/index";
+import { PipelineCtx, Tally, pMap } from "@/lib/pipeline/index";
 import { engagement } from "@/lib/pipeline/fetch";
 import { rankClusters } from "@/lib/pipeline/rank";
 
@@ -29,6 +29,7 @@ export async function summarizeStage(
   );
   const byId = new Map(tweets.map((t) => [t.id, t]));
 
+  const tally = new Tally();
   const items = await pMap(
     ranked,
     async (cluster, i) => {
@@ -37,16 +38,19 @@ export async function summarizeStage(
         ctx.log(
           `[${theme.id}] summarize: ${i + 1}/${ranked.length} "${item.headline.slice(0, 60)}"`
         );
+        tally.success();
         return item;
       } catch (err) {
         ctx.log(
           `[${theme.id}] summarize: cluster "${cluster.key}" FAILED: ${String(err)}`
         );
+        tally.failure(err);
         return null;
       }
     },
     CONCURRENCY
   );
+  tally.assertSomeSucceeded(theme.id, "summarize", "cluster summaries");
   return items.filter((i): i is DigestItem => i !== null);
 }
 

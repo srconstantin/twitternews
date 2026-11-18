@@ -2,7 +2,7 @@ import { MODEL_FAST } from "@/lib/claude";
 import { safeTruncate } from "@/lib/text";
 import { extractCanonicalIds, normalizeUrl } from "@/lib/links";
 import { FilteredTweet, ThemeConfig, Tweet } from "@/lib/types";
-import { PipelineCtx, pMap } from "@/lib/pipeline/index";
+import { PipelineCtx, Tally, pMap } from "@/lib/pipeline/index";
 
 const BATCH_SIZE = 30;
 const CONCURRENCY = 5;
@@ -46,10 +46,11 @@ export async function filterStage(
   }
 
   let kept = autoKeep.length;
+  const tally = new Tally();
   const classified = await pMap(
     batches,
     async (batch, bi) => {
-      const verdicts = await classifyBatch(ctx, theme, batch);
+      const verdicts = await classifyBatch(ctx, theme, batch, tally);
       const keptTweets = batch.filter((_, i) => verdicts[i]);
       kept += keptTweets.length;
       ctx.log(
@@ -59,6 +60,7 @@ export async function filterStage(
     },
     CONCURRENCY
   );
+  tally.assertSomeSucceeded(theme.id, "filter", "classification batches");
 
   return [...autoKeep, ...classified.flat()];
 }
@@ -66,7 +68,8 @@ export async function filterStage(
 async function classifyBatch(
   ctx: PipelineCtx,
   theme: ThemeConfig,
-  batch: FilteredTweet[]
+  batch: FilteredTweet[],
+  tally: Tally
 ): Promise<boolean[]> {
   const listing = batch
     .map(
@@ -90,11 +93,13 @@ Respond ONLY with a JSON array like [{"n": 1, "keep": true}, ...] covering every
       mock: () => batch.map((_, i) => ({ n: i + 1, keep: true })),
     });
     const keepByN = new Map(result.map((r) => [r.n, r.keep]));
+    tally.success();
     // Fail-open per tweet: missing verdicts count as keep.
     return batch.map((_, i) => keepByN.get(i + 1) ?? true);
   } catch (err) {
     // Fail-open per batch: ranking will bury junk; silent drops are worse.
     ctx.log(`[${theme.id}] filter: batch classification FAILED (keeping all): ${String(err)}`);
+    tally.failure(err);
     return batch.map(() => true);
   }
 }

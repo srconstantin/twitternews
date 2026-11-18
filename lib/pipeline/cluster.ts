@@ -1,7 +1,7 @@
 import { MODEL_FAST, MODEL_SMART } from "@/lib/claude";
 import { safeTruncate } from "@/lib/text";
 import { Cluster, FilteredTweet, ThemeConfig } from "@/lib/types";
-import { PipelineCtx } from "@/lib/pipeline/index";
+import { PipelineCtx, Tally } from "@/lib/pipeline/index";
 import { engagement } from "@/lib/pipeline/fetch";
 
 const TOPIC_BATCH_SIZE = 40;
@@ -65,6 +65,7 @@ async function clusterByTopic(
   const sorted = [...tweets].sort((a, b) => engagement(b) - engagement(a));
   const labels: TopicLabel[] = [];
   const assignment = new Map<string, string>(); // tweetId -> slug
+  const tally = new Tally();
 
   for (let i = 0; i < sorted.length; i += TOPIC_BATCH_SIZE) {
     const batch = sorted.slice(i, i + TOPIC_BATCH_SIZE);
@@ -81,10 +82,13 @@ async function clusterByTopic(
       ctx.log(
         `[${theme.id}] cluster: batch ${batchNo}, ${labels.length} labels so far`
       );
+      tally.success();
     } catch (err) {
       ctx.log(`[${theme.id}] cluster: batch ${batchNo} FAILED (tweets unassigned): ${String(err)}`);
+      tally.failure(err);
     }
   }
+  tally.assertSomeSucceeded(theme.id, "cluster", "labeling batches");
 
   // Merge labels that describe the same story. Up to two rounds: the second
   // catches duplicates that survive the first. Groups union transitively
